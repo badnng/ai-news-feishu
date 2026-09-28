@@ -14,15 +14,14 @@
   "workflows": [
     {
       "name": "ai-news-workflow",
-
       "binding": "AI_NEWS_WORKFLOW",
-
-      "class_name": "AINewsWorkflow",
-
-      // 每 6 小时执行一次
-      "schedules": [
-        "0 */6 * * *"
-      ]
+      "class_name": "AINewsWorkflow"
     }
-  ]
+  ],
+
+  "triggers": {
+    "crons": [
+      "0 */6 * * *"
+    ]
+  }
 }
