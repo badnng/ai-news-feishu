@@ -30,6 +30,7 @@ interface Env {
   MAX_RESEARCH_SECONDS?: string;
   POLL_INTERVAL_SECONDS?: string;
   REPORT_LANGUAGE?: string;
+  SEARCH_CONCURRENCY?: string;
 
   // Feishu
   FEISHU_WEBHOOK_URL: string;
@@ -994,33 +995,124 @@ function buildFeishuCard(
   meta: {
     model: string;
     reasoning: string;
+    lookbackHours: number;
+    successfulShards: number;
+    totalShards: number;
   },
+  sections: Array<{
+    title: string;
+    report: ParsedReport;
+  }>,
 ): unknown {
-  const reportText =
-    truncate(
-      report.text,
-      12000,
-    );
+  const elements: any[] = [];
 
-  const chunks =
-    splitText(
-      reportText,
-    );
+  elements.push({
+    tag: "column_set",
+    flex_mode: "none",
+    background_style: "grey",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [{
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content:
+              `**时间窗**\n最近 ${meta.lookbackHours}h`,
+          },
+        }],
+      },
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [{
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content:
+              `**搜索组**\n${meta.successfulShards}/${meta.totalShards}`,
+          },
+        }],
+      },
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [{
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content:
+              `**来源**\n${report.sources.length}`,
+          },
+        }],
+      },
+    ],
+  });
 
-  const elements:
-    any[] = [];
+  for (const section of sections) {
+    elements.push({
+      tag: "hr",
+    });
 
-  for (
-    const chunk of chunks
-  ) {
     elements.push({
       tag: "div",
-
       text: {
         tag: "lark_md",
-        content: chunk,
+        content:
+          `**${section.title}**`,
       },
     });
+
+    for (
+      const chunk of splitText(
+        truncate(
+          section.report.text,
+          4200,
+        ),
+        2100,
+      )
+    ) {
+      elements.push({
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: chunk,
+        },
+      });
+    }
+
+    const directSources =
+      section.report.sources.slice(0, 3);
+
+    if (directSources.length > 0) {
+      elements.push({
+        tag: "action",
+        actions: directSources.map(
+          (source, index) => ({
+            tag: "button",
+            text: {
+              tag: "plain_text",
+              content:
+                directSources.length === 1
+                  ? "查看原文"
+                  : `原文 ${index + 1}`,
+            },
+            type:
+              index === 0
+                ? "primary"
+                : "default",
+            url: source.url,
+          }),
+        ),
+      });
+    }
   }
 
   elements.push({
@@ -1029,94 +1121,47 @@ function buildFeishuCard(
 
   elements.push({
     tag: "div",
-
-    text: {
-      tag: "lark_md",
-
-      content:
-        `**🔗 查看原文**\n\n${buildSourcesMarkdown(
-          report.sources,
-        )}`,
-    },
-  });
-
-  elements.push({
-    tag: "hr",
-  });
-
-  elements.push({
-    tag: "div",
-
     fields: [
       {
         is_short: true,
-
         text: {
           tag: "lark_md",
-
           content:
-            `**🤖 模型**\n${meta.model}`,
+            `**模型**\n${meta.model}`,
         },
       },
-
       {
         is_short: true,
-
         text: {
           tag: "lark_md",
-
           content:
-            `**🧠 思考强度**\n${meta.reasoning}`,
+            `**思考强度**\n${meta.reasoning}`,
         },
       },
-
       {
         is_short: true,
-
         text: {
           tag: "lark_md",
-
           content:
-            `**🔗 来源数量**\n${report.sources.length}`,
-        },
-      },
-
-      {
-        is_short: true,
-
-        text: {
-          tag: "lark_md",
-
-          content:
-            `**⏰ 生成时间**\n${new Date().toISOString()}`,
+            `**生成时间**\n${new Date().toISOString()}`,
         },
       },
     ],
   });
 
   return {
-    msg_type:
-      "interactive",
-
+    msg_type: "interactive",
     card: {
       config: {
-        wide_screen_mode:
-          true,
+        wide_screen_mode: true,
       },
-
       header: {
-        template:
-          "blue",
-
+        template: "turquoise",
         title: {
-          tag:
-            "plain_text",
-
-          content:
-            "🤖 AI 新闻情报速报",
+          tag: "plain_text",
+          content: "AI 新鲜情报",
         },
       },
-
       elements,
     },
   };
@@ -1162,9 +1207,24 @@ async function sendFeishu(
 
 const DEFAULT_RESEARCH_SHARDS = [
   {
-    id: "frontier-models",
-    title: "国际前沿模型",
-    focus: "OpenAI、ChatGPT、Anthropic、Claude、Google DeepMind、Gemini、xAI、Grok，以及重要的新模型、API 和产品发布",
+    id: "anthropic",
+    title: "Anthropic / Claude",
+    focus: "只检查 Anthropic 与 Claude。必须优先检查 Anthropic 官方网站、Claude 官方公告/文档、新模型、新版本、API、Claude Code 与产品更新；如果最近时间窗口内有新模型发布，必须收录，不要被其他新闻挤掉",
+  },
+  {
+    id: "openai",
+    title: "OpenAI / ChatGPT",
+    focus: "只检查 OpenAI 与 ChatGPT。优先官方博客、产品公告、模型/API 文档、Codex 与重要产品更新；如果最近时间窗口内有新模型或新版本发布，必须收录",
+  },
+  {
+    id: "google",
+    title: "Google / Gemini",
+    focus: "只检查 Google DeepMind、Gemini 与 Google AI。优先官方博客、模型卡、开发者公告、API 与产品更新；如果最近时间窗口内有新模型或新版本发布，必须收录",
+  },
+  {
+    id: "xai",
+    title: "xAI / Grok",
+    focus: "只检查 xAI 与 Grok。优先 xAI 官方公告、模型/API/产品更新和官方 X 账号公开信息；如果最近时间窗口内有新模型或新版本发布，必须收录",
   },
   {
     id: "china-models",
@@ -1430,62 +1490,106 @@ export class AINewsWorkflow
       error: string;
     }> = [];
 
-    for (const shard of shards) {
-      try {
-        const response = await runResponseStep(
-          step,
-          this.env,
-          params,
-          `search-${shard.id}`,
-          buildShardPrompt(
-            this.env,
-            shard.title,
-            shard.focus,
-            customQuery,
-          ),
-          true,
-        );
+    const concurrency = clamp(
+      parseNumber(
+        this.env.SEARCH_CONCURRENCY,
+        4,
+      ),
+      1,
+      8,
+    );
 
-        const parsed = parseResponseOutput(response);
+    for (
+      let offset = 0;
+      offset < shards.length;
+      offset += concurrency
+    ) {
+      const batch = shards.slice(
+        offset,
+        offset + concurrency,
+      );
 
-        if (!parsed.text) {
-          throw new Error(
-            `${shard.title}: completed but returned no output text`,
-          );
+      const batchResults = await Promise.all(
+        batch.map(async (shard) => {
+          try {
+            const response = await runResponseStep(
+              step,
+              this.env,
+              params,
+              `search-${shard.id}`,
+              buildShardPrompt(
+                this.env,
+                shard.title,
+                shard.focus,
+                customQuery,
+              ),
+              true,
+            );
+
+            const parsed =
+              parseResponseOutput(response);
+
+            if (!parsed.text) {
+              throw new Error(
+                `${shard.title}: completed but returned no output text`,
+              );
+            }
+
+            const sanitizedSources =
+              sanitizeSourcesForShard(
+                shard.id,
+                parsed.sources,
+              );
+
+            if (
+              shard.id === "tibo-x" &&
+              sanitizedSources.length === 0
+            ) {
+              throw new Error(
+                "Tibo / X 动态未获取到 x.com/thsottiaux/status/... 的直接原帖链接；第三方镜像/广告站已拒绝",
+              );
+            }
+
+            return {
+              ok: true as const,
+              title: shard.title,
+              report: {
+                ...parsed,
+                sources: sanitizedSources,
+              },
+            };
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : String(error);
+
+            console.error(
+              `Shard failed: ${shard.id}`,
+              message,
+            );
+
+            return {
+              ok: false as const,
+              id: shard.id,
+              error: message,
+            };
+          }
+        }),
+      );
+
+      for (const result of batchResults) {
+        if (result.ok) {
+          successful.push({
+            title: result.title,
+            report: result.report,
+          });
+        } else {
+          failed.push({
+            id: result.id,
+            error: result.error,
+          });
         }
-
-        const sanitizedSources =
-          sanitizeSourcesForShard(
-            shard.id,
-            parsed.sources,
-          );
-
-        if (
-          shard.id === "tibo-x" &&
-          sanitizedSources.length === 0
-        ) {
-          throw new Error(
-            "Tibo / X 动态未获取到 x.com/thsottiaux/status/... 的直接原帖链接；第三方镜像/广告站已拒绝",
-          );
-        }
-
-        successful.push({
-          title: shard.title,
-          report: {
-            ...parsed,
-            sources: sanitizedSources,
-          },
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : String(error);
-        console.error(`Shard failed: ${shard.id}`, message);
-        failed.push({
-          id: shard.id,
-          error: message,
-        });
       }
     }
 
@@ -1510,10 +1614,26 @@ export class AINewsWorkflow
     const card = await step.do(
       "build-feishu-card",
       async () =>
-        buildFeishuCard(report, {
-          model,
-          reasoning,
-        }),
+        buildFeishuCard(
+          report,
+          {
+            model,
+            reasoning,
+            lookbackHours: clamp(
+              parseNumber(
+                this.env.SEARCH_LOOKBACK_HOURS,
+                24,
+              ),
+              1,
+              720,
+            ),
+            successfulShards:
+              successful.length,
+            totalShards:
+              shards.length,
+          },
+          successful,
+        ),
     );
 
     await step.do(
