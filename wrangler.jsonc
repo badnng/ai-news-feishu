@@ -1,1 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
 
+  "name": "ai-news-feishu",
+
+  "main": "src/index.ts",
+
+  "compatibility_date": "2026-09-28",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "workflows": [
+    {
+      "name": "ai-news-workflow",
+
+      "binding": "AI_NEWS_WORKFLOW",
+
+      "class_name": "AINewsWorkflow",
+
+      // 每 6 小时执行一次
+      "schedules": [
+        "0 */6 * * *"
+      ]
+    }
+  ]
+}
