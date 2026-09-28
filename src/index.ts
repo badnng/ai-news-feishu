@@ -2257,7 +2257,9 @@ ${escapeHtml(
             const instance =
               await env
                 .AI_NEWS_WORKFLOW
-                .create({\n                  params: {},\n                });
+                .create({
+                  params: {},
+                });
 
             console.log(
               "Scheduled Workflow created:",
