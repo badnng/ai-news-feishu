@@ -1682,22 +1682,26 @@ to allow public /run access.
 
 重点关注：
 
-OpenAI
-Anthropic
-Google DeepMind
 Gemini
 Claude
 ChatGPT
-Meta AI
-Microsoft
-NVIDIA
-xAI
+Grok
+DeepSeek
+GLM
+Xiaomi MiMo
+seedance
+doubao
 AI Agent
 LLM
 AI 编程
 开源模型
 多模态模型
 AI 基础设施
+
+并额外关注最近X的Tibo发布的帖子
+https://x.com/thsottiaux
+并稍微解读是不是有reset的迹象
+
                   `.trim(),
               },
             });
