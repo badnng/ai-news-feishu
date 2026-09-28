@@ -9,23 +9,22 @@ import type {
 
 /**
  * ============================================================
- * Cloudflare Environment
+ * Environment
  * ============================================================
  */
 
 interface Env {
-  // OpenAI / OpenAI-compatible Responses API
+  // LLM
   LLM_BASE_URL: string;
   LLM_API_KEY: string;
   LLM_MODEL: string;
 
-  // Optional
   LLM_RESPONSES_PATH?: string;
   REASONING_EFFORT?: string;
   LLM_BACKGROUND_MODE?: string;
   SEARCH_CONTEXT_SIZE?: string;
 
-  // Research settings
+  // Research
   SEARCH_LOOKBACK_HOURS?: string;
   MAX_NEWS_COUNT?: string;
   MAX_RESEARCH_SECONDS?: string;
@@ -35,10 +34,17 @@ interface Env {
   // Feishu
   FEISHU_WEBHOOK_URL: string;
 
-  // Protect /api/*
-  API_AUTH_TOKEN: string;
+  // API authentication
+  API_AUTH_TOKEN?: string;
 
-  // Workflow binding
+  // Browser /run authentication
+  RUN_SECRET?: string;
+
+  // true = /run can be opened without ?key=
+  // false = require /run?key=xxxxx
+  RUN_PUBLIC?: string;
+
+  // Workflow
   AI_NEWS_WORKFLOW: Workflow<ResearchParams>;
 }
 
@@ -57,6 +63,7 @@ interface ResearchParams {
 
 interface OpenAIResponse {
   id: string;
+
   status:
     | "queued"
     | "in_progress"
@@ -68,7 +75,7 @@ interface OpenAIResponse {
 
   model?: string;
 
-  output?: Array<any>;
+  output?: any[];
 
   error?: {
     code?: string;
@@ -88,7 +95,7 @@ interface ParsedReport {
 
 /**
  * ============================================================
- * Helpers
+ * Basic helpers
  * ============================================================
  */
 
@@ -96,73 +103,72 @@ function json(
   data: unknown,
   status = 200,
 ): Response {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers":
-        "Content-Type, Authorization",
-      "access-control-allow-methods":
-        "GET, POST, OPTIONS",
+  return new Response(
+    JSON.stringify(data, null, 2),
+    {
+      status,
+
+      headers: {
+        "content-type":
+          "application/json; charset=utf-8",
+
+        "access-control-allow-origin":
+          "*",
+
+        "access-control-allow-headers":
+          "Content-Type, Authorization",
+
+        "access-control-allow-methods":
+          "GET, POST, OPTIONS",
+      },
     },
-  });
-}
-
-function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
-}
-
-function normalizePath(path: string): string {
-  if (!path.startsWith("/")) {
-    return `/${path}`;
-  }
-
-  return path;
-}
-
-function responsesUrl(env: Env): string {
-  const base = normalizeBaseUrl(env.LLM_BASE_URL);
-
-  const path = normalizePath(
-    env.LLM_RESPONSES_PATH || "/responses",
   );
-
-  return `${base}${path}`;
 }
 
-function responseByIdUrl(
-  env: Env,
-  responseId: string,
+function escapeHtml(
+  value: string,
 ): string {
-  return `${responsesUrl(env)}/${encodeURIComponent(responseId)}`;
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function parseBool(
   value: string | undefined,
-  defaultValue: boolean,
+  fallback: boolean,
 ): boolean {
   if (value === undefined) {
-    return defaultValue;
+    return fallback;
   }
 
-  return ["1", "true", "yes", "on"].includes(
+  return [
+    "1",
+    "true",
+    "yes",
+    "on",
+  ].includes(
     value.toLowerCase(),
   );
 }
 
 function parseNumber(
   value: string | undefined,
-  defaultValue: number,
+  fallback: number,
 ): number {
   if (!value) {
-    return defaultValue;
+    return fallback;
   }
 
-  const parsed = Number(value);
+  const parsed =
+    Number(value);
 
-  if (!Number.isFinite(parsed)) {
-    return defaultValue;
+  if (
+    !Number.isFinite(parsed)
+  ) {
+    return fallback;
   }
 
   return parsed;
@@ -173,36 +179,118 @@ function clamp(
   min: number,
   max: number,
 ): number {
-  return Math.max(min, Math.min(max, value));
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      value,
+    ),
+  );
 }
 
-function validateEnv(env: Env): void {
-  const missing: string[] = [];
+/**
+ * ============================================================
+ * Environment validation
+ * ============================================================
+ */
+
+function validateEnv(
+  env: Env,
+): void {
+  const missing:
+    string[] = [];
 
   if (!env.LLM_BASE_URL) {
-    missing.push("LLM_BASE_URL");
+    missing.push(
+      "LLM_BASE_URL",
+    );
   }
 
   if (!env.LLM_API_KEY) {
-    missing.push("LLM_API_KEY");
+    missing.push(
+      "LLM_API_KEY",
+    );
   }
 
   if (!env.LLM_MODEL) {
-    missing.push("LLM_MODEL");
+    missing.push(
+      "LLM_MODEL",
+    );
   }
 
   if (!env.FEISHU_WEBHOOK_URL) {
-    missing.push("FEISHU_WEBHOOK_URL");
+    missing.push(
+      "FEISHU_WEBHOOK_URL",
+    );
   }
 
-  if (missing.length > 0) {
+  if (
+    missing.length > 0
+  ) {
     throw new Error(
       `Missing environment variables: ${missing.join(", ")}`,
     );
   }
 }
 
-function isAuthorized(
+/**
+ * ============================================================
+ * API URL
+ * ============================================================
+ */
+
+function normalizeBaseUrl(
+  baseUrl: string,
+): string {
+  return baseUrl.replace(
+    /\/+$/,
+    "",
+  );
+}
+
+function normalizePath(
+  path: string,
+): string {
+  return path.startsWith("/")
+    ? path
+    : `/${path}`;
+}
+
+function responsesUrl(
+  env: Env,
+): string {
+  const base =
+    normalizeBaseUrl(
+      env.LLM_BASE_URL,
+    );
+
+  const path =
+    normalizePath(
+      env.LLM_RESPONSES_PATH ||
+        "/responses",
+    );
+
+  return `${base}${path}`;
+}
+
+function responseByIdUrl(
+  env: Env,
+  responseId: string,
+): string {
+  return `${
+    responsesUrl(env)
+  }/${encodeURIComponent(
+    responseId,
+  )}`;
+}
+
+/**
+ * ============================================================
+ * Authentication
+ * ============================================================
+ */
+
+function isApiAuthorized(
   request: Request,
   env: Env,
 ): boolean {
@@ -211,15 +299,60 @@ function isAuthorized(
   }
 
   const authorization =
-    request.headers.get("Authorization");
+    request.headers.get(
+      "Authorization",
+    );
 
-  return authorization ===
-    `Bearer ${env.API_AUTH_TOKEN}`;
+  return (
+    authorization ===
+    `Bearer ${env.API_AUTH_TOKEN}`
+  );
+}
+
+function isRunAuthorized(
+  url: URL,
+  env: Env,
+): boolean {
+  /**
+   * RUN_PUBLIC=true
+   *
+   * allows:
+   *
+   * /run
+   */
+
+  if (
+    parseBool(
+      env.RUN_PUBLIC,
+      false,
+    )
+  ) {
+    return true;
+  }
+
+  /**
+   * Otherwise:
+   *
+   * /run?key=xxxxx
+   */
+
+  if (!env.RUN_SECRET) {
+    return false;
+  }
+
+  const key =
+    url.searchParams.get(
+      "key",
+    );
+
+  return (
+    key === env.RUN_SECRET
+  );
 }
 
 /**
  * ============================================================
- * Research Prompt
+ * Prompt
  * ============================================================
  */
 
@@ -227,103 +360,162 @@ function buildResearchPrompt(
   env: Env,
   customQuery?: string,
 ): string {
-  const lookback = clamp(
-    parseNumber(
-      env.SEARCH_LOOKBACK_HOURS,
-      24,
-    ),
-    1,
-    24 * 30,
-  );
+  const lookback =
+    clamp(
+      parseNumber(
+        env.SEARCH_LOOKBACK_HOURS,
+        24,
+      ),
+      1,
+      720,
+    );
 
-  const maxNews = clamp(
-    parseNumber(
-      env.MAX_NEWS_COUNT,
-      8,
-    ),
-    1,
-    20,
-  );
+  const maxNews =
+    clamp(
+      parseNumber(
+        env.MAX_NEWS_COUNT,
+        8,
+      ),
+      1,
+      20,
+    );
 
   const language =
-    env.REPORT_LANGUAGE || "zh-CN";
+    env.REPORT_LANGUAGE ||
+    "zh-CN";
 
-  const topic =
+  const query =
     customQuery?.trim() ||
-    "搜索人工智能、AI模型、LLM、AI Agent、AI公司和重要AI产品的最新新闻";
+    `
+搜索最近的重要人工智能相关新闻，包括：
+
+- OpenAI
+- Anthropic
+- Google DeepMind
+- Gemini
+- Claude
+- ChatGPT
+- Meta AI
+- Microsoft AI
+- NVIDIA
+- xAI
+- AI Agent
+- LLM
+- 多模态模型
+- AI 编程
+- AI 基础设施
+- AI 开源模型
+`;
 
   return `
-你是一名专业的 AI 新闻研究员。
+你是一名专业的 AI 科技新闻研究员。
+
+你必须使用网络搜索能力获取最新的信息。
 
 当前任务：
 
-${topic}
+${query}
 
-你必须使用网络搜索工具进行实时搜索。
+搜索时间范围：
 
-搜索要求：
+主要关注最近 ${lookback} 小时内发生的新闻。
 
-1. 主要搜索最近 ${lookback} 小时内发生的 AI 新闻。
-2. 最多选择 ${maxNews} 条真正重要的新闻。
-3. 优先来源：
-   - 公司官方博客
-   - 官方公告
-   - 官方文档
-   - 官方 GitHub
-   - 学术论文
-   - Reuters
-   - Bloomberg
-   - Financial Times
-   - The Verge
-   - TechCrunch
-   - Wired
-   - Ars Technica
-   - 其他可信科技媒体
+最多选择 ${maxNews} 条真正重要的新闻。
 
-4. 同一个事件如果有多个媒体报道，只保留一条新闻。
-5. 尽可能使用一手来源。
-6. 不要编造新闻。
-7. 不要编造来源。
-8. 对重大新闻尽量交叉验证。
-9. 必须保留引用来源。
-10. 如果搜索不到可靠证据，就不要写入报告。
+==============================
+
+来源优先级：
+
+1. 官方网站
+2. 官方 Blog
+3. 官方公告
+4. 官方开发者文档
+5. 官方 GitHub
+6. 学术论文
+7. Reuters
+8. Bloomberg
+9. Financial Times
+10. The Verge
+11. TechCrunch
+12. Ars Technica
+13. Wired
+14. 其他可靠媒体
+
+==============================
+
+要求：
+
+- 必须进行网络搜索
+- 不要依赖过时知识
+- 不要编造新闻
+- 不要编造来源
+- 不要重复报道同一个事件
+- 尽量寻找一手来源
+- 重大新闻尽量进行交叉验证
+- 如果没有可靠证据，不要写
+- 优先真正有行业影响的新闻
+- 保留真实引用来源
+
+==============================
 
 输出格式：
 
-# AI 新闻速报
+# 🤖 AI 新闻速报
 
 ## 1. 新闻标题
 
-**发生了什么：**
-简要说明。
+**发生了什么**
 
-**为什么重要：**
-解释这件事为什么值得关注。
+使用 1-3 段解释新闻。
 
-**关键信息：**
-- 信息1
-- 信息2
-- 信息3
+**为什么重要**
 
-然后继续下一条。
+解释这件事情对 AI 行业、开发者、公司或用户意味着什么。
+
+**关键信息**
+
+- 信息 1
+- 信息 2
+- 信息 3
+
+---
+
+## 2. 新闻标题
+
+继续相同格式。
+
+==============================
 
 最后增加：
 
-## 今日趋势
+# 📊 今日 AI 趋势
 
-总结今天 AI 行业最值得关注的 2-4 个趋势。
+总结今天最值得关注的 2-4 个趋势。
+
+例如：
+
+- 模型能力趋势
+- Agent 趋势
+- AI 编程趋势
+- 开源模型趋势
+- AI 公司竞争趋势
+
+==============================
 
 输出语言：
+
 ${language}
 
-不要在正文最后自己伪造 URL。
-请依赖 Web Search 的真实 citation。
+重要：
+
+不要在正文中自己虚构 URL。
+真实来源由 Web Search citation 提供。
 `.trim();
 }
 
 /**
  * ============================================================
- * OpenAI Responses API
+ * Responses API
  * ============================================================
  */
 
@@ -331,32 +523,30 @@ async function createAIResponse(
   env: Env,
   params: ResearchParams,
 ): Promise<OpenAIResponse> {
-  const url = responsesUrl(env);
+  const url =
+    responsesUrl(env);
 
   const reasoningEffort =
     params.reasoning_effort ||
     env.REASONING_EFFORT ||
     "high";
 
-  const background = parseBool(
-    env.LLM_BACKGROUND_MODE,
-    true,
-  );
+  const background =
+    parseBool(
+      env.LLM_BACKGROUND_MODE,
+      true,
+    );
 
-  const webSearchTool: Record<string, unknown> = {
-    type: "web_search",
-  };
+  const webSearchTool:
+    Record<string, unknown> = {
+      type: "web_search",
+    };
 
-  /**
-   * Optional.
-   * Some OpenAI-compatible services only support:
-   *
-   * { type: "web_search" }
-   *
-   * so this is only added when configured.
-   */
-  if (env.SEARCH_CONTEXT_SIZE) {
-    webSearchTool.search_context_size =
+  if (
+    env.SEARCH_CONTEXT_SIZE
+  ) {
+    webSearchTool
+      .search_context_size =
       env.SEARCH_CONTEXT_SIZE;
   }
 
@@ -368,64 +558,77 @@ async function createAIResponse(
     background,
 
     reasoning: {
-      effort: reasoningEffort,
+      effort:
+        reasoningEffort,
     },
 
     tools: [
       webSearchTool,
     ],
 
-    input: buildResearchPrompt(
-      env,
-      params.query,
-    ),
+    input:
+      buildResearchPrompt(
+        env,
+        params.query,
+      ),
   };
 
   console.log(
-    "Creating Responses API request",
+    "Creating AI research:",
     {
       url,
       model: body.model,
-      reasoning_effort: reasoningEffort,
+      reasoning:
+        reasoningEffort,
       background,
     },
   );
 
-  const response = await fetch(url, {
-    method: "POST",
+  const response =
+    await fetch(
+      url,
+      {
+        method: "POST",
 
-    headers: {
-      "content-type": "application/json",
+        headers: {
+          "content-type":
+            "application/json",
 
-      authorization:
-        `Bearer ${env.LLM_API_KEY}`,
-    },
+          authorization:
+            `Bearer ${env.LLM_API_KEY}`,
+        },
 
-    body: JSON.stringify(body),
-  });
+        body:
+          JSON.stringify(
+            body,
+          ),
+      },
+    );
 
-  const responseText =
+  const text =
     await response.text();
 
   if (!response.ok) {
     throw new Error(
-      `Responses API error ${response.status}: ${responseText}`,
+      `Responses API error ${response.status}: ${text}`,
     );
   }
 
-  let data: OpenAIResponse;
+  let data:
+    OpenAIResponse;
 
   try {
-    data = JSON.parse(responseText);
+    data =
+      JSON.parse(text);
   } catch {
     throw new Error(
-      `LLM endpoint returned invalid JSON: ${responseText.slice(0, 1000)}`,
+      `LLM endpoint returned invalid JSON: ${text.slice(0, 1000)}`,
     );
   }
 
   if (!data.id) {
     throw new Error(
-      `Responses API returned no response id: ${responseText.slice(0, 1000)}`,
+      `Responses API returned no response id`,
     );
   }
 
@@ -436,82 +639,105 @@ async function retrieveAIResponse(
   env: Env,
   responseId: string,
 ): Promise<OpenAIResponse> {
-  const url =
-    responseByIdUrl(
-      env,
-      responseId,
+  const response =
+    await fetch(
+      responseByIdUrl(
+        env,
+        responseId,
+      ),
+      {
+        method: "GET",
+
+        headers: {
+          authorization:
+            `Bearer ${env.LLM_API_KEY}`,
+
+          "content-type":
+            "application/json",
+        },
+      },
     );
 
-  const response = await fetch(url, {
-    method: "GET",
-
-    headers: {
-      "content-type": "application/json",
-
-      authorization:
-        `Bearer ${env.LLM_API_KEY}`,
-    },
-  });
-
-  const responseText =
+  const text =
     await response.text();
 
   if (!response.ok) {
     throw new Error(
-      `Responses retrieve error ${response.status}: ${responseText}`,
+      `Responses retrieve error ${response.status}: ${text}`,
     );
   }
 
   try {
-    return JSON.parse(responseText);
+    return JSON.parse(
+      text,
+    );
   } catch {
     throw new Error(
-      `LLM endpoint returned invalid JSON while polling`,
+      "Invalid JSON while retrieving response",
     );
   }
 }
 
 /**
  * ============================================================
- * Parse Responses API output
+ * Parse AI response
  * ============================================================
  */
 
 function parseResponseOutput(
   response: OpenAIResponse,
 ): ParsedReport {
-  const textParts: string[] = [];
+  const textParts:
+    string[] = [];
 
   const sourceMap =
-    new Map<string, Source>();
+    new Map<
+      string,
+      Source
+    >();
 
   for (
-    const item of response.output || []
+    const item of
+    response.output || []
   ) {
     if (
-      item?.type !== "message" ||
-      !Array.isArray(item.content)
+      item?.type !== "message"
+    ) {
+      continue;
+    }
+
+    if (
+      !Array.isArray(
+        item.content,
+      )
     ) {
       continue;
     }
 
     for (
-      const content of item.content
+      const content
+      of item.content
     ) {
       if (
-        content?.type !== "output_text"
+        content?.type !==
+        "output_text"
       ) {
         continue;
       }
 
       if (
-        typeof content.text === "string"
+        typeof content.text ===
+        "string"
       ) {
-        textParts.push(content.text);
+        textParts.push(
+          content.text,
+        );
       }
 
       if (
-        !Array.isArray(content.annotations)
+        !Array.isArray(
+          content.annotations,
+        )
       ) {
         continue;
       }
@@ -521,61 +747,60 @@ function parseResponseOutput(
         of content.annotations
       ) {
         if (
-          annotation?.type !== "url_citation"
+          annotation?.type !==
+          "url_citation"
         ) {
           continue;
         }
 
-        const url =
+        const sourceUrl =
           annotation.url;
 
         if (
-          typeof url !== "string" ||
-          !url.startsWith("http")
+          typeof sourceUrl !==
+            "string" ||
+          !sourceUrl.startsWith(
+            "http",
+          )
         ) {
           continue;
         }
 
         const title =
-          typeof annotation.title === "string"
+          typeof annotation.title ===
+          "string"
             ? annotation.title
             : "查看原文";
 
-        sourceMap.set(url, {
-          title,
-          url,
-        });
+        sourceMap.set(
+          sourceUrl,
+          {
+            title,
+            url: sourceUrl,
+          },
+        );
       }
     }
   }
 
   return {
     text:
-      textParts.join("\n\n").trim(),
+      textParts
+        .join("\n\n")
+        .trim(),
 
     sources:
-      [...sourceMap.values()],
+      [
+        ...sourceMap.values(),
+      ],
   };
 }
 
 /**
- * OpenAI Responses Web Search citations are returned through
- * output_text.annotations with type=url_citation.
- */
-
-/**
  * ============================================================
- * Feishu helpers
+ * Feishu
  * ============================================================
  */
-
-function escapeLarkText(
-  value: string,
-): string {
-  return value
-    .replace(/\r/g, "")
-    .trim();
-}
 
 function truncate(
   value: string,
@@ -587,23 +812,28 @@ function truncate(
     return value;
   }
 
-  return `${value.slice(
-    0,
-    maxLength,
-  )}\n\n……内容过长，已截断`;
+  return (
+    value.slice(
+      0,
+      maxLength,
+    ) +
+    "\n\n……内容过长，已截断"
+  );
 }
 
 function splitText(
   value: string,
   maxLength = 3500,
 ): string[] {
-  const result: string[] = [];
+  const result:
+    string[] = [];
 
   let remaining =
     value.trim();
 
   while (
-    remaining.length > maxLength
+    remaining.length >
+    maxLength
   ) {
     let cut =
       remaining.lastIndexOf(
@@ -612,21 +842,30 @@ function splitText(
       );
 
     if (
-      cut < maxLength * 0.5
+      cut <
+      maxLength * 0.5
     ) {
-      cut = maxLength;
+      cut =
+        maxLength;
     }
 
     result.push(
-      remaining.slice(0, cut),
+      remaining.slice(
+        0,
+        cut,
+      ),
     );
 
     remaining =
-      remaining.slice(cut).trim();
+      remaining
+        .slice(cut)
+        .trim();
   }
 
   if (remaining) {
-    result.push(remaining);
+    result.push(
+      remaining,
+    );
   }
 
   return result;
@@ -638,19 +877,36 @@ function buildSourcesMarkdown(
   if (
     sources.length === 0
   ) {
-    return "本次报告未获取到可展示的原文链接。";
+    return (
+      "没有获取到可展示的原文链接。"
+    );
   }
 
   return sources
-    .slice(0, 15)
+    .slice(
+      0,
+      20,
+    )
     .map(
-      (source, index) => {
-        const safeTitle =
+      (
+        source,
+        index,
+      ) => {
+        const title =
           source.title
-            .replace(/\[/g, "【")
-            .replace(/\]/g, "】");
+            .replace(
+              /\[/g,
+              "【",
+            )
+            .replace(
+              /\]/g,
+              "】",
+            );
 
-        return `${index + 1}. [查看原文｜${safeTitle}](${source.url})`;
+        return (
+          `${index + 1}. ` +
+          `[查看原文｜${title}](${source.url})`
+        );
       },
     )
     .join("\n");
@@ -663,23 +919,32 @@ function buildFeishuCard(
     reasoning: string;
   },
 ): unknown {
-  const text = truncate(
-    escapeLarkText(report.text),
-    12000,
-  );
+  const reportText =
+    truncate(
+      report.text,
+      12000,
+    );
 
   const chunks =
-    splitText(text);
+    splitText(
+      reportText,
+    );
 
-  const elements: any[] =
-    chunks.map((chunk) => ({
+  const elements:
+    any[] = [];
+
+  for (
+    const chunk of chunks
+  ) {
+    elements.push({
       tag: "div",
 
       text: {
         tag: "lark_md",
         content: chunk,
       },
-    }));
+    });
+  }
 
   elements.push({
     tag: "hr",
@@ -692,7 +957,7 @@ function buildFeishuCard(
       tag: "lark_md",
 
       content:
-        `**🔗 原文来源**\n\n${buildSourcesMarkdown(
+        `**🔗 查看原文**\n\n${buildSourcesMarkdown(
           report.sources,
         )}`,
     },
@@ -708,55 +973,68 @@ function buildFeishuCard(
     fields: [
       {
         is_short: true,
+
         text: {
           tag: "lark_md",
+
           content:
-            `**模型**\n${meta.model}`,
+            `**🤖 模型**\n${meta.model}`,
         },
       },
 
       {
         is_short: true,
+
         text: {
           tag: "lark_md",
+
           content:
-            `**Reasoning**\n${meta.reasoning}`,
+            `**🧠 思考强度**\n${meta.reasoning}`,
         },
       },
 
       {
         is_short: true,
+
         text: {
           tag: "lark_md",
+
           content:
-            `**引用来源**\n${report.sources.length}`,
+            `**🔗 来源数量**\n${report.sources.length}`,
         },
       },
 
       {
         is_short: true,
+
         text: {
           tag: "lark_md",
+
           content:
-            `**生成时间**\n${new Date().toISOString()}`,
+            `**⏰ 生成时间**\n${new Date().toISOString()}`,
         },
       },
     ],
   });
 
   return {
-    msg_type: "interactive",
+    msg_type:
+      "interactive",
 
     card: {
       config: {
-        wide_screen_mode: true,
+        wide_screen_mode:
+          true,
       },
 
       header: {
-        template: "blue",
+        template:
+          "blue",
 
         title: {
-          tag: "plain_text",
+          tag:
+            "plain_text",
+
           content:
             "🤖 AI 新闻情报速报",
         },
@@ -772,30 +1050,36 @@ async function sendFeishu(
   payload: unknown,
 ): Promise<void> {
   const response =
-    await fetch(webhookUrl, {
-      method: "POST",
+    await fetch(
+      webhookUrl,
+      {
+        method:
+          "POST",
 
-      headers: {
-        "content-type":
-          "application/json",
+        headers: {
+          "content-type":
+            "application/json",
+        },
+
+        body:
+          JSON.stringify(
+            payload,
+          ),
       },
+    );
 
-      body:
-        JSON.stringify(payload),
-    });
-
-  const body =
+  const text =
     await response.text();
 
   if (!response.ok) {
     throw new Error(
-      `Feishu webhook error ${response.status}: ${body}`,
+      `Feishu webhook error ${response.status}: ${text}`,
     );
   }
 
   console.log(
-    "Feishu message sent",
-    body,
+    "Feishu sent:",
+    text,
   );
 }
 
@@ -805,41 +1089,44 @@ async function sendFeishu(
  * ============================================================
  */
 
-export class AINewsWorkflow extends WorkflowEntrypoint<
-  Env,
-  ResearchParams
-> {
+export class AINewsWorkflow
+  extends WorkflowEntrypoint<
+    Env,
+    ResearchParams
+  > {
+
   async run(
-    event: WorkflowEvent<ResearchParams>,
-    step: WorkflowStep,
+    event:
+      WorkflowEvent<ResearchParams>,
+
+    step:
+      WorkflowStep,
   ) {
-    validateEnv(this.env);
+    validateEnv(
+      this.env,
+    );
 
     const params =
       event.payload || {};
+
+    const model =
+      params.model ||
+      this.env.LLM_MODEL;
 
     const reasoning =
       params.reasoning_effort ||
       this.env.REASONING_EFFORT ||
       "high";
 
-    const model =
-      params.model ||
-      this.env.LLM_MODEL;
-
-    /**
-     * Maximum research runtime
-     */
-    const configuredMax =
-      params.max_research_seconds ??
-      parseNumber(
-        this.env.MAX_RESEARCH_SECONDS,
-        300,
-      );
-
     const maxResearchSeconds =
       clamp(
-        configuredMax,
+        params
+          .max_research_seconds ??
+          parseNumber(
+            this.env
+              .MAX_RESEARCH_SECONDS,
+            300,
+          ),
         30,
         1800,
       );
@@ -847,7 +1134,8 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
     const pollIntervalSeconds =
       clamp(
         parseNumber(
-          this.env.POLL_INTERVAL_SECONDS,
+          this.env
+            .POLL_INTERVAL_SECONDS,
           5,
         ),
         2,
@@ -855,10 +1143,8 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
       );
 
     /**
-     * --------------------------------------------------------
-     * Step 1
-     * Create Responses request
-     * --------------------------------------------------------
+     * STEP 1
+     * Create research
      */
 
     const created =
@@ -868,8 +1154,10 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
         {
           retries: {
             limit: 3,
-            delay: "10 seconds",
-            backoff: "exponential",
+            delay:
+              "10 seconds",
+            backoff:
+              "exponential",
           },
         },
 
@@ -881,37 +1169,34 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
         },
       );
 
-    let responseId =
+    const responseId =
       created.id;
 
     let status =
       created.status;
 
-    /**
-     * In case endpoint returned an already completed response
-     */
     let finalResponse:
-      | OpenAIResponse
-      | undefined =
-      status === "completed"
+      OpenAIResponse |
+      undefined =
+      status ===
+      "completed"
         ? created
         : undefined;
 
     /**
-     * --------------------------------------------------------
-     * Step 2
-     * Poll background Response
-     * --------------------------------------------------------
+     * STEP 2
+     * Poll response
      */
 
     if (
       status === "queued" ||
-      status === "in_progress"
+      status ===
+        "in_progress"
     ) {
       const maxPolls =
         Math.ceil(
           maxResearchSeconds /
-            pollIntervalSeconds,
+          pollIntervalSeconds,
         );
 
       for (
@@ -931,8 +1216,10 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
             {
               retries: {
                 limit: 3,
-                delay: "5 seconds",
-                backoff: "exponential",
+                delay:
+                  "5 seconds",
+                backoff:
+                  "exponential",
               },
             },
 
@@ -948,13 +1235,14 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
           polled.status;
 
         console.log(
-          "Responses status",
+          "AI status:",
           responseId,
           status,
         );
 
         if (
-          status === "completed"
+          status ===
+          "completed"
         ) {
           finalResponse =
             polled;
@@ -963,24 +1251,21 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
         }
 
         if (
-          status !== "queued" &&
-          status !== "in_progress"
+          status !==
+            "queued" &&
+          status !==
+            "in_progress"
         ) {
           throw new Error(
-            `AI response ended with status=${status}: ${
-              polled.error?.message ||
+            `AI response failed: ${status} - ${
+              polled.error
+                ?.message ||
               "unknown error"
             }`,
           );
         }
       }
     }
-
-    /**
-     * --------------------------------------------------------
-     * Timeout
-     * --------------------------------------------------------
-     */
 
     if (!finalResponse) {
       throw new Error(
@@ -989,24 +1274,25 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
     }
 
     /**
-     * --------------------------------------------------------
-     * Step 3
-     * Parse final report + citations
-     * --------------------------------------------------------
+     * STEP 3
+     * Parse
      */
 
     const report =
       await step.do(
         "parse-result",
+
         async () => {
           const parsed =
             parseResponseOutput(
               finalResponse!,
             );
 
-          if (!parsed.text) {
+          if (
+            !parsed.text
+          ) {
             throw new Error(
-              "Responses API completed but returned no output text",
+              "AI completed but returned no output text",
             );
           }
 
@@ -1015,15 +1301,14 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
       );
 
     /**
-     * --------------------------------------------------------
-     * Step 4
-     * Build Feishu rich card
-     * --------------------------------------------------------
+     * STEP 4
+     * Build Feishu card
      */
 
     const card =
       await step.do(
         "build-feishu-card",
+
         async () => {
           return buildFeishuCard(
             report,
@@ -1036,10 +1321,8 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
       );
 
     /**
-     * --------------------------------------------------------
-     * Step 5
+     * STEP 5
      * Send Feishu
-     * --------------------------------------------------------
      */
 
     await step.do(
@@ -1048,8 +1331,10 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
       {
         retries: {
           limit: 5,
-          delay: "10 seconds",
-          backoff: "exponential",
+          delay:
+            "10 seconds",
+          backoff:
+            "exponential",
         },
       },
 
@@ -1057,7 +1342,6 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
         await sendFeishu(
           this.env
             .FEISHU_WEBHOOK_URL,
-
           card,
         );
 
@@ -1086,93 +1370,597 @@ export class AINewsWorkflow extends WorkflowEntrypoint<
 
 /**
  * ============================================================
- * HTTP Worker
+ * Worker
  * ============================================================
  */
 
 export default {
+
+  /**
+   * ==========================================================
+   * HTTP
+   * ==========================================================
+   */
+
   async fetch(
     request: Request,
     env: Env,
   ): Promise<Response> {
     const url =
-      new URL(request.url);
+      new URL(
+        request.url,
+      );
 
     /**
      * CORS
      */
+
     if (
-      request.method === "OPTIONS"
+      request.method ===
+      "OPTIONS"
     ) {
-      return new Response(null, {
-        status: 204,
+      return new Response(
+        null,
+        {
+          status: 204,
 
-        headers: {
-          "access-control-allow-origin":
-            "*",
+          headers: {
+            "access-control-allow-origin":
+              "*",
 
-          "access-control-allow-headers":
-            "Content-Type, Authorization",
+            "access-control-allow-headers":
+              "Content-Type, Authorization",
 
-          "access-control-allow-methods":
-            "GET, POST, OPTIONS",
+            "access-control-allow-methods":
+              "GET, POST, OPTIONS",
+          },
         },
-      });
+      );
     }
 
     /**
-     * --------------------------------------------------------
+     * ========================================================
      * GET /
-     * --------------------------------------------------------
+     * ========================================================
      */
 
     if (
-      request.method === "GET" &&
+      request.method ===
+        "GET" &&
       url.pathname === "/"
     ) {
-      return json({
-        name:
-          "AI News Feishu",
+      return new Response(
+        `<!DOCTYPE html>
+<html lang="zh-CN">
 
-        status:
-          "running",
+<head>
 
-        endpoints: {
-          health:
-            "GET /health",
+<meta charset="UTF-8">
 
-          run:
-            "POST /api/run",
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0"
+>
 
-          status:
-            "GET /api/status/:id",
+<title>AI News Feishu</title>
+
+<style>
+
+body {
+  margin: 0;
+  background: #f5f6f8;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #1f2329;
+}
+
+.container {
+  max-width: 720px;
+  margin: 70px auto;
+  padding: 20px;
+}
+
+.card {
+  background: white;
+  border-radius: 18px;
+  padding: 32px;
+  box-shadow:
+    0 10px 40px
+    rgba(0,0,0,.08);
+}
+
+h1 {
+  margin-top: 0;
+}
+
+.ok {
+  color: #00a870;
+}
+
+code {
+  background: #f2f3f5;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+p {
+  line-height: 1.7;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="card">
+
+<h1>🤖 AI News Feishu</h1>
+
+<p class="ok">
+● Worker 正常运行
+</p>
+
+<p>
+自动定时任务：
+Cloudflare Cron → Workflow → AI 搜索 → 飞书
+</p>
+
+<p>
+手动启动：
+</p>
+
+<p>
+<code>/run?key=你的RUN_SECRET</code>
+</p>
+
+<p>
+如果设置：
+</p>
+
+<p>
+<code>RUN_PUBLIC=true</code>
+</p>
+
+<p>
+则可以直接访问：
+</p>
+
+<p>
+<code>/run</code>
+</p>
+
+</div>
+
+</div>
+
+</body>
+
+</html>`,
+        {
+          headers: {
+            "content-type":
+              "text/html; charset=utf-8",
+
+            "cache-control":
+              "no-store",
+          },
         },
-      });
+      );
     }
 
     /**
-     * --------------------------------------------------------
+     * ========================================================
      * GET /health
-     * --------------------------------------------------------
+     * ========================================================
      */
 
     if (
-      request.method === "GET" &&
-      url.pathname === "/health"
+      request.method ===
+        "GET" &&
+      url.pathname ===
+        "/health"
     ) {
       return json({
         ok: true,
+
         service:
           "ai-news-feishu",
+
+        time:
+          new Date()
+            .toISOString(),
       });
     }
 
     /**
-     * Everything below requires authentication
+     * ========================================================
+     * GET /run
+     *
+     * Browser manual trigger
+     * ========================================================
      */
 
     if (
-      !isAuthorized(
+      request.method ===
+        "GET" &&
+      url.pathname ===
+        "/run"
+    ) {
+      /**
+       * Security
+       */
+
+      if (
+        !isRunAuthorized(
+          url,
+          env,
+        )
+      ) {
+        if (
+          !parseBool(
+            env.RUN_PUBLIC,
+            false,
+          ) &&
+          !env.RUN_SECRET
+        ) {
+          return new Response(
+            `
+RUN_SECRET is not configured.
+
+Go to:
+
+Cloudflare
+→ Workers & Pages
+→ ai-news-feishu
+→ Settings
+→ Variables and Secrets
+
+Add:
+
+RUN_SECRET = your password
+
+Then open:
+
+/run?key=your password
+
+Or set:
+
+RUN_PUBLIC=true
+
+to allow public /run access.
+            `.trim(),
+            {
+              status: 503,
+
+              headers: {
+                "content-type":
+                  "text/plain; charset=utf-8",
+              },
+            },
+          );
+        }
+
+        return new Response(
+          "Unauthorized",
+          {
+            status: 401,
+
+            headers: {
+              "content-type":
+                "text/plain; charset=utf-8",
+            },
+          },
+        );
+      }
+
+      try {
+        validateEnv(
+          env,
+        );
+
+        /**
+         * Only create Workflow.
+         *
+         * Browser does NOT wait
+         * for AI research.
+         */
+
+        const instance =
+          await env
+            .AI_NEWS_WORKFLOW
+            .create({
+              params: {
+                query:
+                  `
+搜索最近24小时最重要的 AI 新闻。
+
+重点关注：
+
+OpenAI
+Anthropic
+Google DeepMind
+Gemini
+Claude
+ChatGPT
+Meta AI
+Microsoft
+NVIDIA
+xAI
+AI Agent
+LLM
+AI 编程
+开源模型
+多模态模型
+AI 基础设施
+                  `.trim(),
+              },
+            });
+
+        return new Response(
+          `<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0"
+>
+
+<title>AI 新闻抓取已启动</title>
+
+<style>
+
+body {
+  margin: 0;
+
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+
+  background:
+    #f5f6f8;
+
+  color:
+    #1f2329;
+}
+
+.container {
+  max-width:
+    680px;
+
+  margin:
+    80px auto;
+
+  padding:
+    24px;
+}
+
+.card {
+  background:
+    white;
+
+  border-radius:
+    18px;
+
+  padding:
+    34px;
+
+  box-shadow:
+    0 10px 40px
+    rgba(0,0,0,.08);
+}
+
+h1 {
+  margin-top:
+    0;
+
+  font-size:
+    28px;
+}
+
+.status {
+  margin-top:
+    22px;
+
+  padding:
+    18px;
+
+  border-radius:
+    12px;
+
+  background:
+    #eef6ff;
+
+  color:
+    #245bdb;
+
+  font-weight:
+    600;
+}
+
+.description {
+  color:
+    #646a73;
+
+  line-height:
+    1.8;
+
+  margin-top:
+    22px;
+}
+
+.workflow {
+  margin-top:
+    22px;
+
+  background:
+    #f5f6f8;
+
+  padding:
+    14px;
+
+  border-radius:
+    10px;
+
+  word-break:
+    break-all;
+
+  font-family:
+    monospace;
+}
+
+.success {
+  color:
+    #00a870;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="card">
+
+<h1>
+🤖 AI 新闻抓取任务已启动
+</h1>
+
+<div class="status">
+🔎 正在后台搜索最新 AI 新闻……
+</div>
+
+<p class="description">
+
+Cloudflare Workflow
+已经成功创建。
+
+<br><br>
+
+现在可以直接关闭这个网页。
+
+<br><br>
+
+Workflow 会继续在 Cloudflare
+后台运行，调用 AI 模型进行网络搜索、
+分析和整理。
+
+<br><br>
+
+完成后会自动把 AI 新闻富文本卡片发送到飞书机器人。
+
+</p>
+
+<p class="success">
+✓ 后台任务启动成功
+</p>
+
+<div class="workflow">
+
+Workflow ID:
+
+<br><br>
+
+${escapeHtml(
+  instance.id,
+)}
+
+</div>
+
+</div>
+
+</div>
+
+</body>
+
+</html>`,
+          {
+            status: 200,
+
+            headers: {
+              "content-type":
+                "text/html; charset=utf-8",
+
+              "cache-control":
+                "no-store",
+            },
+          },
+        );
+      } catch (
+        error
+      ) {
+        console.error(
+          error,
+        );
+
+        const message =
+          error instanceof
+          Error
+            ? error.message
+            : String(
+                error,
+              );
+
+        return new Response(
+          `<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+<meta charset="UTF-8">
+
+<title>启动失败</title>
+
+</head>
+
+<body>
+
+<h1>
+❌ Workflow 启动失败
+</h1>
+
+<pre>${escapeHtml(
+  message,
+)}</pre>
+
+</body>
+
+</html>`,
+          {
+            status: 500,
+
+            headers: {
+              "content-type":
+                "text/html; charset=utf-8",
+            },
+          },
+        );
+      }
+    }
+
+    /**
+     * ========================================================
+     * API authentication
+     * ========================================================
+     */
+
+    if (
+      !isApiAuthorized(
         request,
         env,
       )
@@ -1188,58 +1976,39 @@ export default {
     }
 
     /**
-     * --------------------------------------------------------
+     * ========================================================
      * POST /api/run
-     * --------------------------------------------------------
+     * ========================================================
      */
 
     if (
-      request.method === "POST" &&
-      url.pathname === "/api/run"
+      request.method ===
+        "POST" &&
+      url.pathname ===
+        "/api/run"
     ) {
       try {
-        validateEnv(env);
+        validateEnv(
+          env,
+        );
 
         let body:
           ResearchParams = {};
 
         try {
           body =
-            await request.json<ResearchParams>();
+            await request
+              .json<ResearchParams>();
         } catch {
           body = {};
-        }
-
-        /**
-         * Validate override
-         */
-        if (
-          body.max_research_seconds !==
-            undefined &&
-          (
-            !Number.isFinite(
-              body.max_research_seconds,
-            ) ||
-            body.max_research_seconds <
-              30
-          )
-        ) {
-          return json(
-            {
-              ok: false,
-
-              error:
-                "max_research_seconds must be >= 30",
-            },
-            400,
-          );
         }
 
         const instance =
           await env
             .AI_NEWS_WORKFLOW
             .create({
-              params: body,
+              params:
+                body,
             });
 
         return json({
@@ -1251,17 +2020,24 @@ export default {
           status:
             "queued",
         });
-      } catch (error) {
-        console.error(error);
+      } catch (
+        error
+      ) {
+        console.error(
+          error,
+        );
 
         return json(
           {
             ok: false,
 
             error:
-              error instanceof Error
+              error instanceof
+              Error
                 ? error.message
-                : String(error),
+                : String(
+                    error,
+                  ),
           },
           500,
         );
@@ -1269,16 +2045,18 @@ export default {
     }
 
     /**
-     * --------------------------------------------------------
+     * ========================================================
      * GET /api/status/:id
-     * --------------------------------------------------------
+     * ========================================================
      */
 
     if (
-      request.method === "GET" &&
-      url.pathname.startsWith(
-        "/api/status/",
-      )
+      request.method ===
+        "GET" &&
+      url.pathname
+        .startsWith(
+          "/api/status/",
+        )
     ) {
       try {
         const id =
@@ -1293,6 +2071,7 @@ export default {
           return json(
             {
               ok: false,
+
               error:
                 "Missing workflow id",
             },
@@ -1306,23 +2085,32 @@ export default {
             .get(id);
 
         const status =
-          await instance.status();
+          await instance
+            .status();
 
         return json({
           ok: true,
-          workflow_id: id,
+
+          workflow_id:
+            id,
+
           workflow:
             status,
         });
-      } catch (error) {
+      } catch (
+        error
+      ) {
         return json(
           {
             ok: false,
 
             error:
-              error instanceof Error
+              error instanceof
+              Error
                 ? error.message
-                : String(error),
+                : String(
+                    error,
+                  ),
           },
           500,
         );
@@ -1332,9 +2120,98 @@ export default {
     return json(
       {
         ok: false,
-        error: "Not Found",
+        error:
+          "Not Found",
       },
       404,
     );
   },
+
+  /**
+   * ==========================================================
+   * Cron
+   *
+   * Free Workers Cron Trigger
+   * ==========================================================
+   */
+
+  async scheduled(
+    controller:
+      ScheduledController,
+
+    env: Env,
+
+    ctx:
+      ExecutionContext,
+  ): Promise<void> {
+    console.log(
+      "Cron triggered:",
+      controller.cron,
+    );
+
+    /**
+     * Cron itself does NOT
+     * perform AI research.
+     *
+     * It only creates Workflow.
+     */
+
+    ctx.waitUntil(
+      (
+        async () => {
+          try {
+            validateEnv(
+              env,
+            );
+
+            const instance =
+              await env
+                .AI_NEWS_WORKFLOW
+                .create({
+                  params: {
+                    query:
+                      `
+搜索最近24小时最重要的 AI 新闻。
+
+重点关注：
+
+OpenAI
+Anthropic
+Google DeepMind
+Gemini
+Claude
+ChatGPT
+Meta AI
+Microsoft
+NVIDIA
+xAI
+AI Agent
+LLM
+AI 编程
+开源模型
+多模态模型
+AI 基础设施
+                      `.trim(),
+                  },
+                });
+
+            console.log(
+              "Scheduled Workflow created:",
+              instance.id,
+            );
+          } catch (
+            error
+          ) {
+            console.error(
+              "Scheduled Workflow failed:",
+              error,
+            );
+
+            throw error;
+          }
+        }
+      )(),
+    );
+  },
+
 } satisfies ExportedHandler<Env>;
