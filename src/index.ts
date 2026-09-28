@@ -1074,9 +1074,9 @@ function buildFeishuCard(
       const chunk of splitText(
         truncate(
           section.report.text,
-          4200,
+          2200,
         ),
-        2100,
+        1100,
       )
     ) {
       elements.push({
