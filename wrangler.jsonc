@@ -14,7 +14,9 @@
   "workflows": [
     {
       "name": "ai-news-workflow",
+
       "binding": "AI_NEWS_WORKFLOW",
+
       "class_name": "AINewsWorkflow"
     }
   ],
