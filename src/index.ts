@@ -1390,45 +1390,11 @@ export class AINewsWorkflow
       );
     }
 
-    let finalText = successful
+    const finalText = successful
       .map((item) =>
         `## ${item.title}\n\n${item.report.text}`,
       )
       .join("\n\n---\n\n");
-
-    try {
-      const synthesisResponse = await runResponseStep(
-        step,
-        this.env,
-        params,
-        "synthesize-report",
-        buildSynthesisPrompt(
-          this.env,
-          successful.map((item) => ({
-            title: item.title,
-            text: item.report.text,
-          })),
-          customQuery,
-        ),
-        false,
-      );
-
-      const synthesis = parseResponseOutput(
-        synthesisResponse,
-      );
-
-      if (synthesis.text) {
-        finalText = synthesis.text;
-      }
-    } catch (error) {
-      console.error(
-        "Synthesis failed; using segmented results:",
-        error instanceof Error
-          ? error.message
-          : String(error),
-      );
-    }
-
     const report: ParsedReport = {
       text: finalText,
       sources: mergeSources(
