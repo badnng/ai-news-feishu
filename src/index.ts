@@ -799,6 +799,54 @@ function parseResponseOutput(
   };
 }
 
+function sanitizeSourcesForShard(
+  shardId: string,
+  sources: Source[],
+): Source[] {
+  if (shardId !== "tibo-x") {
+    return sources;
+  }
+
+  const direct = new Map<string, Source>();
+
+  for (const source of sources) {
+    try {
+      const parsed = new URL(source.url);
+      const host = parsed.hostname
+        .toLowerCase()
+        .replace(/^www\./, "")
+        .replace(/^mobile\./, "");
+
+      if (
+        host !== "x.com" &&
+        host !== "twitter.com"
+      ) {
+        continue;
+      }
+
+      if (
+        !/^\/thsottiaux\/status\/\d+/i.test(
+          parsed.pathname,
+        )
+      ) {
+        continue;
+      }
+
+      const canonical =
+        `https://x.com${parsed.pathname}`;
+
+      direct.set(canonical, {
+        title: source.title,
+        url: canonical,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return [...direct.values()];
+}
+
 /**
  * ============================================================
  * Feishu
@@ -1105,7 +1153,7 @@ const DEFAULT_RESEARCH_SHARDS = [
   {
     id: "tibo-x",
     title: "Tibo / X 动态",
-    focus: "重点检查 https://x.com/thsottiaux 最近的公开帖子、相关讨论和上下文。只基于可验证公开内容判断是否出现所谓 reset 的迹象；证据不足时明确写证据不足，不要猜测",
+    focus: "重点检查 https://x.com/thsottiaux 最近的公开帖子和上下文。Tibo 原帖只接受 x.com/thsottiaux/status/... 的直接链接；不要把第三方镜像站、聚合站、广告站或转载站当作原文。只基于可验证公开内容判断是否出现所谓 reset 的迹象；证据不足时明确写证据不足，不要猜测",
   },
 ] as const;
 
@@ -1121,6 +1169,10 @@ function buildShardPrompt(
     720,
   );
   const language = env.REPORT_LANGUAGE || "zh-CN";
+  const now = new Date();
+  const cutoff = new Date(
+    now.getTime() - lookback * 60 * 60 * 1000,
+  );
 
   return [
     "你是一名 AI 新闻研究员。请使用 web_search，只完成一个窄范围搜索任务。",
@@ -1128,8 +1180,16 @@ function buildShardPrompt(
     `分组：${title}`,
     `重点：${focus}`,
     customQuery ? `用户额外要求：${customQuery}` : "",
-    `时间范围：优先最近 ${lookback} 小时。`,
-    "最多保留 3 个真正重要、互不重复的事件。",
+    `当前时间（UTC）：${now.toISOString()}`,
+    `硬性截止时间（UTC）：${cutoff.toISOString()}`,
+    `只允许收录首次公开时间位于最近 ${lookback} 小时内的事件。`,
+    "最多保留 3 个真正重要、互不重复的事件；没有符合时间窗口的新事件就返回 0 条，绝对不要用旧闻凑数。",
+    "",
+    "严格时间规则：",
+    "- 事件本身首次公开时间必须晚于硬性截止时间。",
+    "- 今天发布的文章如果只是回顾更早发生的旧事件，也不要收录。",
+    "- 无法确认事件发生/首次公开时间的内容，不要收录。",
+    "- 搜索结果中的旧新闻、旧版本、旧发布、历史回顾全部忽略。",
     "",
     "要求：",
     "- 必须使用 web_search。",
@@ -1138,11 +1198,12 @@ function buildShardPrompt(
     "- 重要结论尽量交叉验证。",
     "- 不确定就明确说明，不要脑补。",
     "- 保留真实 citation。",
+    "- 正文不要输出 URL；原文链接由程序单独附加。",
     "- 输出简洁，避免长篇背景介绍。",
     "",
     "每条事件格式：",
     "### 标题",
-    "时间：尽量给出明确日期/时间",
+    "时间：必须给出可确认的日期/时间",
     "发生了什么：2-4 句",
     "为什么重要：1-2 句",
     "证据/不确定性：必要时说明",
@@ -1367,9 +1428,27 @@ export class AINewsWorkflow
           );
         }
 
+        const sanitizedSources =
+          sanitizeSourcesForShard(
+            shard.id,
+            parsed.sources,
+          );
+
+        if (
+          shard.id === "tibo-x" &&
+          sanitizedSources.length === 0
+        ) {
+          throw new Error(
+            "Tibo / X 动态未获取到 x.com/thsottiaux/status/... 的直接原帖链接；第三方镜像/广告站已拒绝",
+          );
+        }
+
         successful.push({
           title: shard.title,
-          report: parsed,
+          report: {
+            ...parsed,
+            sources: sanitizedSources,
+          },
         });
       } catch (error) {
         const message =
