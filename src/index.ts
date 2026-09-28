@@ -242,33 +242,61 @@ function validateEnv(
 function normalizeBaseUrl(
   baseUrl: string,
 ): string {
-  return baseUrl.replace(
-    /\/+$/,
-    "",
-  );
+  return baseUrl
+    .trim()
+    .replace(/\/+$/, "");
 }
 
-function normalizePath(
-  path: string,
+function normalizeResponsesPath(
+  path: string | undefined,
 ): string {
-  return path.startsWith("/")
-    ? path
-    : `/${path}`;
+  let normalized = (path || "/responses")
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!normalized.startsWith("/")) {
+    normalized = `/${normalized}`;
+  }
+
+  // OpenAI Responses API uses plural /responses.
+  // Accept the common singular /response typo.
+  if (
+    normalized === "/response" ||
+    normalized.endsWith("/response")
+  ) {
+    normalized = `${normalized}s`;
+  }
+
+  return normalized;
 }
 
 function responsesUrl(
   env: Env,
 ): string {
-  const base =
-    normalizeBaseUrl(
-      env.LLM_BASE_URL,
-    );
+  let base = normalizeBaseUrl(
+    env.LLM_BASE_URL,
+  );
 
-  const path =
-    normalizePath(
-      env.LLM_RESPONSES_PATH ||
-        "/responses",
-    );
+  // LLM_BASE_URL may already include the endpoint.
+  if (/\/response$/i.test(base)) {
+    base = `${base}s`;
+  }
+
+  if (/\/responses$/i.test(base)) {
+    return base;
+  }
+
+  const path = normalizeResponsesPath(
+    env.LLM_RESPONSES_PATH,
+  );
+
+  // Avoid https://host/v1 + /v1/responses => /v1/v1/responses.
+  if (
+    /\/v1$/i.test(base) &&
+    /^\/v1\/responses$/i.test(path)
+  ) {
+    return `${base.slice(0, -3)}${path}`;
+  }
 
   return `${base}${path}`;
 }
@@ -277,9 +305,7 @@ function responseByIdUrl(
   env: Env,
   responseId: string,
 ): string {
-  return `${
-    responsesUrl(env)
-  }/${encodeURIComponent(
+  return `${responsesUrl(env)}/${encodeURIComponent(
     responseId,
   )}`;
 }
