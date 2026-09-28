@@ -522,104 +522,82 @@ ${language}
 async function createAIResponse(
   env: Env,
   params: ResearchParams,
+  options?: {
+    prompt?: string;
+    useWebSearch?: boolean;
+  },
 ): Promise<OpenAIResponse> {
-  const url =
-    responsesUrl(env);
-
+  const url = responsesUrl(env);
   const reasoningEffort =
     params.reasoning_effort ||
     env.REASONING_EFFORT ||
-    "high";
+    "medium";
+  const background = parseBool(
+    env.LLM_BACKGROUND_MODE,
+    false,
+  );
 
-  const background =
-    parseBool(
-      env.LLM_BACKGROUND_MODE,
-      true,
-    );
+  const body: Record<string, unknown> = {
+    model: params.model || env.LLM_MODEL,
+    background,
+    reasoning: {
+      effort: reasoningEffort,
+    },
+    input:
+      options?.prompt ||
+      buildResearchPrompt(env, params.query),
+  };
 
-  const webSearchTool:
-    Record<string, unknown> = {
+  if (options?.useWebSearch !== false) {
+    const webSearchTool: Record<string, unknown> = {
       type: "web_search",
     };
 
-  if (
-    env.SEARCH_CONTEXT_SIZE
-  ) {
-    webSearchTool
-      .search_context_size =
-      env.SEARCH_CONTEXT_SIZE;
+    if (env.SEARCH_CONTEXT_SIZE) {
+      webSearchTool.search_context_size =
+        env.SEARCH_CONTEXT_SIZE;
+    }
+
+    body.tools = [webSearchTool];
   }
 
-  const body = {
-    model:
-      params.model ||
-      env.LLM_MODEL,
-
+  console.log("Creating AI response:", {
+    url,
+    model: body.model,
+    reasoning: reasoningEffort,
     background,
+    web_search: options?.useWebSearch !== false,
+  });
 
-    reasoning: {
-      effort:
-        reasoningEffort,
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: `Bearer ${env.LLM_API_KEY}`,
     },
+    body: JSON.stringify(body),
+  });
 
-    tools: [
-      webSearchTool,
-    ],
-
-    input:
-      buildResearchPrompt(
-        env,
-        params.query,
-      ),
-  };
-
-  console.log(
-    "Creating AI research:",
-    {
-      url,
-      model: body.model,
-      reasoning:
-        reasoningEffort,
-      background,
-    },
-  );
-
-  const response =
-    await fetch(
-      url,
-      {
-        method: "POST",
-
-        headers: {
-          "content-type":
-            "application/json",
-
-          authorization:
-            `Bearer ${env.LLM_API_KEY}`,
-        },
-
-        body:
-          JSON.stringify(
-            body,
-          ),
-      },
-    );
-
-  const text =
-    await response.text();
+  const text = await response.text();
 
   if (!response.ok) {
+    const ray = response.headers.get("cf-ray");
+    const server = response.headers.get("server");
+    const extra = [
+      ray ? `cf-ray=${ray}` : "",
+      server ? `server=${server}` : "",
+    ].filter(Boolean).join(" ");
+
     throw new Error(
-      `Responses API error ${response.status}: ${text}`,
+      `Responses API error ${response.status}${extra ? ` (${extra})` : ""}: ${text.slice(0, 2000)}`,
     );
   }
 
-  let data:
-    OpenAIResponse;
+  let data: OpenAIResponse;
 
   try {
-    data =
-      JSON.parse(text);
+    data = JSON.parse(text);
   } catch {
     throw new Error(
       `LLM endpoint returned invalid JSON: ${text.slice(0, 1000)}`,
@@ -628,7 +606,7 @@ async function createAIResponse(
 
   if (!data.id) {
     throw new Error(
-      `Responses API returned no response id`,
+      `Responses API returned no response id: ${text.slice(0, 1000)}`,
     );
   }
 
@@ -700,6 +678,31 @@ function parseResponseOutput(
     const item of
     response.output || []
   ) {
+    if (
+      item?.type === "web_search_call" &&
+      Array.isArray(item?.action?.sources)
+    ) {
+      for (const source of item.action.sources) {
+        const sourceUrl = source?.url;
+        if (
+          typeof sourceUrl !== "string" ||
+          !sourceUrl.startsWith("http")
+        ) {
+          continue;
+        }
+
+        const title =
+          typeof source?.title === "string"
+            ? source.title
+            : "查看原文";
+
+        sourceMap.set(sourceUrl, {
+          title,
+          url: sourceUrl,
+        });
+      }
+    }
+
     if (
       item?.type !== "message"
     ) {
@@ -1083,6 +1086,214 @@ async function sendFeishu(
   );
 }
 
+const DEFAULT_RESEARCH_SHARDS = [
+  {
+    id: "frontier-models",
+    title: "国际前沿模型",
+    focus: "OpenAI、ChatGPT、Anthropic、Claude、Google DeepMind、Gemini、xAI、Grok，以及重要的新模型、API 和产品发布",
+  },
+  {
+    id: "china-models",
+    title: "中国模型与产品",
+    focus: "DeepSeek、智谱 GLM、Xiaomi MiMo、字节跳动 Doubao/Seedance，以及重要的中国 AI 模型、Agent、开源项目和产品发布",
+  },
+  {
+    id: "agents-infra",
+    title: "Agent、编程与基础设施",
+    focus: "AI Agent、AI 编程、代码模型、NVIDIA、推理/训练基础设施、开源模型、多模态模型和开发者工具",
+  },
+  {
+    id: "tibo-x",
+    title: "Tibo / X 动态",
+    focus: "重点检查 https://x.com/thsottiaux 最近的公开帖子、相关讨论和上下文。只基于可验证公开内容判断是否出现所谓 reset 的迹象；证据不足时明确写证据不足，不要猜测",
+  },
+] as const;
+
+function buildShardPrompt(
+  env: Env,
+  title: string,
+  focus: string,
+  customQuery?: string,
+): string {
+  const lookback = clamp(
+    parseNumber(env.SEARCH_LOOKBACK_HOURS, 24),
+    1,
+    720,
+  );
+  const language = env.REPORT_LANGUAGE || "zh-CN";
+
+  return [
+    "你是一名 AI 新闻研究员。请使用 web_search，只完成一个窄范围搜索任务。",
+    "",
+    `分组：${title}`,
+    `重点：${focus}`,
+    customQuery ? `用户额外要求：${customQuery}` : "",
+    `时间范围：优先最近 ${lookback} 小时。`,
+    "最多保留 3 个真正重要、互不重复的事件。",
+    "",
+    "要求：",
+    "- 必须使用 web_search。",
+    "- 优先官方公告、官方博客、官方文档、论文和可靠媒体。",
+    "- 同一事件不要重复。",
+    "- 重要结论尽量交叉验证。",
+    "- 不确定就明确说明，不要脑补。",
+    "- 保留真实 citation。",
+    "- 输出简洁，避免长篇背景介绍。",
+    "",
+    "每条事件格式：",
+    "### 标题",
+    "时间：尽量给出明确日期/时间",
+    "发生了什么：2-4 句",
+    "为什么重要：1-2 句",
+    "证据/不确定性：必要时说明",
+    "",
+    `输出语言：${language}`,
+  ].filter(Boolean).join("\n");
+}
+
+function buildSynthesisPrompt(
+  env: Env,
+  reports: Array<{ title: string; text: string }>,
+  customQuery?: string,
+): string {
+  const maxNews = clamp(
+    parseNumber(env.MAX_NEWS_COUNT, 8),
+    1,
+    20,
+  );
+  const language = env.REPORT_LANGUAGE || "zh-CN";
+  const material = reports
+    .map((report) => `## ${report.title}\n${report.text}`)
+    .join("\n\n");
+
+  return [
+    "你是一名 AI 新闻编辑。下面是多个独立网络搜索步骤已经得到的材料。",
+    "只能基于这些材料整理，不要添加材料中没有的事实，也不要假装再次联网。",
+    customQuery ? `用户主题：${customQuery}` : "",
+    `最多整理 ${maxNews} 条新闻。`,
+    "",
+    "规则：",
+    "- 去重。同一事件来自多个分组时合并。",
+    "- 优先影响范围大、信息新、来源可靠的事件。",
+    "- 每条包含：标题、发生了什么、为什么重要。",
+    "- 对 Tibo / reset 相关内容，只陈述材料支持的证据；证据不足就写“暂不足以判断”。",
+    "- 不要输出 URL，原文链接会由程序单独附上。",
+    "- 最后加“今日 AI 趋势”，总结 2-4 条趋势。",
+    `- 输出语言：${language}`,
+    "",
+    "搜索材料：",
+    material,
+  ].filter(Boolean).join("\n");
+}
+
+async function runResponseStep(
+  step: WorkflowStep,
+  env: Env,
+  params: ResearchParams,
+  label: string,
+  prompt: string,
+  useWebSearch: boolean,
+): Promise<OpenAIResponse> {
+  const created = await step.do(
+    `${label}-create`,
+    {
+      retries: {
+        limit: 4,
+        delay: "15 seconds",
+        backoff: "exponential",
+      },
+    },
+    async (ctx) => {
+      console.log(`${label}: create attempt ${ctx.attempt}`);
+      return await createAIResponse(env, params, {
+        prompt,
+        useWebSearch,
+      });
+    },
+  );
+
+  if (created.status === "completed") {
+    return created;
+  }
+
+  if (
+    created.status !== "queued" &&
+    created.status !== "in_progress"
+  ) {
+    throw new Error(
+      `${label}: response ended with status=${created.status}: ${created.error?.message || "unknown error"}`,
+    );
+  }
+
+  const maxResearchSeconds = clamp(
+    params.max_research_seconds ??
+      parseNumber(env.MAX_RESEARCH_SECONDS, 300),
+    30,
+    1800,
+  );
+  const pollIntervalSeconds = clamp(
+    parseNumber(env.POLL_INTERVAL_SECONDS, 5),
+    2,
+    30,
+  );
+  const maxPolls = Math.ceil(
+    maxResearchSeconds / pollIntervalSeconds,
+  );
+
+  for (let i = 0; i < maxPolls; i++) {
+    await step.sleep(
+      `${label}-wait-${i}`,
+      `${pollIntervalSeconds} seconds`,
+    );
+
+    const polled = await step.do(
+      `${label}-poll-${i}`,
+      {
+        retries: {
+          limit: 3,
+          delay: "5 seconds",
+          backoff: "exponential",
+        },
+      },
+      async () =>
+        await retrieveAIResponse(env, created.id),
+    );
+
+    if (polled.status === "completed") {
+      return polled;
+    }
+
+    if (
+      polled.status !== "queued" &&
+      polled.status !== "in_progress"
+    ) {
+      throw new Error(
+        `${label}: polling ended with status=${polled.status}: ${polled.error?.message || "unknown error"}`,
+      );
+    }
+  }
+
+  throw new Error(
+    `${label}: did not complete within ${maxResearchSeconds} seconds`,
+  );
+}
+
+function mergeSources(
+  reports: ParsedReport[],
+): Source[] {
+  const map = new Map<string, Source>();
+
+  for (const report of reports) {
+    for (const source of report.sources) {
+      if (!map.has(source.url)) {
+        map.set(source.url, source);
+      }
+    }
+  }
+
+  return [...map.values()];
+}
+
 /**
  * ============================================================
  * Workflow
@@ -1094,276 +1305,172 @@ export class AINewsWorkflow
     Env,
     ResearchParams
   > {
-
   async run(
-    event:
-      WorkflowEvent<ResearchParams>,
-
-    step:
-      WorkflowStep,
+    event: WorkflowEvent<ResearchParams>,
+    step: WorkflowStep,
   ) {
-    validateEnv(
-      this.env,
-    );
+    validateEnv(this.env);
 
-    const params =
-      event.payload || {};
-
-    const model =
-      params.model ||
-      this.env.LLM_MODEL;
-
+    const params = event.payload || {};
+    const model = params.model || this.env.LLM_MODEL;
     const reasoning =
       params.reasoning_effort ||
       this.env.REASONING_EFFORT ||
-      "high";
+      "medium";
+    const customQuery = params.query?.trim();
 
-    const maxResearchSeconds =
-      clamp(
-        params
-          .max_research_seconds ??
-          parseNumber(
-            this.env
-              .MAX_RESEARCH_SECONDS,
-            300,
-          ),
-        30,
-        1800,
-      );
-
-    const pollIntervalSeconds =
-      clamp(
-        parseNumber(
-          this.env
-            .POLL_INTERVAL_SECONDS,
-          5,
-        ),
-        2,
-        30,
-      );
-
-    /**
-     * STEP 1
-     * Create research
-     */
-
-    const created =
-      await step.do(
-        "create-ai-research",
-
-        {
-          retries: {
-            limit: 3,
-            delay:
-              "10 seconds",
-            backoff:
-              "exponential",
+    const shards = customQuery
+      ? [
+          {
+            id: "custom-primary",
+            title: "自定义主题主搜索",
+            focus: `围绕用户主题进行主搜索：${customQuery}`,
           },
-        },
+          {
+            id: "custom-verify",
+            title: "自定义主题交叉验证",
+            focus: `独立搜索并验证用户主题，优先寻找一手来源和不同来源的交叉证据：${customQuery}`,
+          },
+        ]
+      : [...DEFAULT_RESEARCH_SHARDS];
 
-        async () => {
-          return await createAIResponse(
+    const successful: Array<{
+      title: string;
+      report: ParsedReport;
+    }> = [];
+    const failed: Array<{
+      id: string;
+      error: string;
+    }> = [];
+
+    for (const shard of shards) {
+      try {
+        const response = await runResponseStep(
+          step,
+          this.env,
+          params,
+          `search-${shard.id}`,
+          buildShardPrompt(
             this.env,
-            params,
-          );
-        },
-      );
-
-    const responseId =
-      created.id;
-
-    let status =
-      created.status;
-
-    let finalResponse:
-      OpenAIResponse |
-      undefined =
-      status ===
-      "completed"
-        ? created
-        : undefined;
-
-    /**
-     * STEP 2
-     * Poll response
-     */
-
-    if (
-      status === "queued" ||
-      status ===
-        "in_progress"
-    ) {
-      const maxPolls =
-        Math.ceil(
-          maxResearchSeconds /
-          pollIntervalSeconds,
+            shard.title,
+            shard.focus,
+            customQuery,
+          ),
+          true,
         );
 
-      for (
-        let i = 0;
-        i < maxPolls;
-        i++
-      ) {
-        await step.sleep(
-          `wait-${i}`,
-          `${pollIntervalSeconds} seconds`,
-        );
+        const parsed = parseResponseOutput(response);
 
-        const polled =
-          await step.do(
-            `poll-${i}`,
-
-            {
-              retries: {
-                limit: 3,
-                delay:
-                  "5 seconds",
-                backoff:
-                  "exponential",
-              },
-            },
-
-            async () => {
-              return await retrieveAIResponse(
-                this.env,
-                responseId,
-              );
-            },
-          );
-
-        status =
-          polled.status;
-
-        console.log(
-          "AI status:",
-          responseId,
-          status,
-        );
-
-        if (
-          status ===
-          "completed"
-        ) {
-          finalResponse =
-            polled;
-
-          break;
-        }
-
-        if (
-          status !==
-            "queued" &&
-          status !==
-            "in_progress"
-        ) {
+        if (!parsed.text) {
           throw new Error(
-            `AI response failed: ${status} - ${
-              polled.error
-                ?.message ||
-              "unknown error"
-            }`,
+            `${shard.title}: completed but returned no output text`,
           );
         }
+
+        successful.push({
+          title: shard.title,
+          report: parsed,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+        console.error(`Shard failed: ${shard.id}`, message);
+        failed.push({
+          id: shard.id,
+          error: message,
+        });
       }
     }
 
-    if (!finalResponse) {
+    if (successful.length === 0) {
       throw new Error(
-        `AI research did not complete within ${maxResearchSeconds} seconds`,
+        `All research shards failed: ${failed.map((item) => `${item.id}: ${item.error}`).join(" | ")}`,
       );
     }
 
-    /**
-     * STEP 3
-     * Parse
-     */
+    let finalText = successful
+      .map((item) =>
+        `## ${item.title}\n\n${item.report.text}`,
+      )
+      .join("\n\n---\n\n");
 
-    const report =
-      await step.do(
-        "parse-result",
-
-        async () => {
-          const parsed =
-            parseResponseOutput(
-              finalResponse!,
-            );
-
-          if (
-            !parsed.text
-          ) {
-            throw new Error(
-              "AI completed but returned no output text",
-            );
-          }
-
-          return parsed;
-        },
+    try {
+      const synthesisResponse = await runResponseStep(
+        step,
+        this.env,
+        params,
+        "synthesize-report",
+        buildSynthesisPrompt(
+          this.env,
+          successful.map((item) => ({
+            title: item.title,
+            text: item.report.text,
+          })),
+          customQuery,
+        ),
+        false,
       );
 
-    /**
-     * STEP 4
-     * Build Feishu card
-     */
-
-    const card =
-      await step.do(
-        "build-feishu-card",
-
-        async () => {
-          return buildFeishuCard(
-            report,
-            {
-              model,
-              reasoning,
-            },
-          );
-        },
+      const synthesis = parseResponseOutput(
+        synthesisResponse,
       );
 
-    /**
-     * STEP 5
-     * Send Feishu
-     */
+      if (synthesis.text) {
+        finalText = synthesis.text;
+      }
+    } catch (error) {
+      console.error(
+        "Synthesis failed; using segmented results:",
+        error instanceof Error
+          ? error.message
+          : String(error),
+      );
+    }
+
+    const report: ParsedReport = {
+      text: finalText,
+      sources: mergeSources(
+        successful.map((item) => item.report),
+      ),
+    };
+
+    const card = await step.do(
+      "build-feishu-card",
+      async () =>
+        buildFeishuCard(report, {
+          model,
+          reasoning,
+        }),
+    );
 
     await step.do(
       "send-feishu",
-
       {
         retries: {
           limit: 5,
-          delay:
-            "10 seconds",
-          backoff:
-            "exponential",
+          delay: "10 seconds",
+          backoff: "exponential",
         },
       },
-
       async () => {
         await sendFeishu(
-          this.env
-            .FEISHU_WEBHOOK_URL,
+          this.env.FEISHU_WEBHOOK_URL,
           card,
         );
-
-        return {
-          ok: true,
-        };
+        return { ok: true };
       },
     );
 
     return {
       ok: true,
-
-      response_id:
-        responseId,
-
       model,
-
-      reasoning_effort:
-        reasoning,
-
-      sources:
-        report.sources.length,
+      reasoning_effort: reasoning,
+      successful_shards: successful.length,
+      total_shards: shards.length,
+      failed_shards: failed,
+      sources: report.sources.length,
     };
   }
 }
@@ -1516,7 +1623,7 @@ Cloudflare Cron → Workflow → AI 搜索 → 飞书
 </p>
 
 <p>
-<code>/run?key=你的RUN_SECRET</code>
+<code>/run?key=你的RUN_SECRET</code>\n</p>\n\n<p>\n自定义主题：\n</p>\n\n<p>\n<code>/run?key=你的RUN_SECRET&amp;q=你的搜索主题</code>
 </p>
 
 <p>
@@ -1671,39 +1778,18 @@ to allow public /run access.
          * for AI research.
          */
 
+        const manualQuery =
+          url.searchParams
+            .get("q")
+            ?.trim();
+
         const instance =
           await env
             .AI_NEWS_WORKFLOW
             .create({
-              params: {
-                query:
-                  `
-搜索最近24小时最重要的 AI 新闻。
-
-重点关注：
-
-Gemini
-Claude
-ChatGPT
-Grok
-DeepSeek
-GLM
-Xiaomi MiMo
-seedance
-doubao
-AI Agent
-LLM
-AI 编程
-开源模型
-多模态模型
-AI 基础设施
-
-并额外关注最近X的Tibo发布的帖子
-https://x.com/thsottiaux
-并稍微解读是不是有reset的迹象
-
-                  `.trim(),
-              },
+              params: manualQuery
+                ? { query: manualQuery }
+                : {},
             });
 
         return new Response(
@@ -2171,33 +2257,7 @@ ${escapeHtml(
             const instance =
               await env
                 .AI_NEWS_WORKFLOW
-                .create({
-                  params: {
-                    query:
-                      `
-搜索最近24小时最重要的 AI 新闻。
-
-重点关注：
-
-OpenAI
-Anthropic
-Google DeepMind
-Gemini
-Claude
-ChatGPT
-Meta AI
-Microsoft
-NVIDIA
-xAI
-AI Agent
-LLM
-AI 编程
-开源模型
-多模态模型
-AI 基础设施
-                      `.trim(),
-                  },
-                });
+                .create({\n                  params: {},\n                });
 
             console.log(
               "Scheduled Workflow created:",
